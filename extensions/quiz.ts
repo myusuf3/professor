@@ -57,8 +57,9 @@ const QuizParams = Type.Object({
 			options: Type.Array(Type.String(), {
 				description: "2-5 answer options. Plausible distractors, one correct.",
 			}),
-			correctIndex: Type.Number({
-				description: "1-based index of the correct option",
+			correctAnswer: Type.String({
+				description:
+					"The correct option's exact text, verbatim from `options`. Grading is done by the tool against this value.",
 			}),
 			explanation: Type.Optional(
 				Type.String({ description: "Shown to the learner after grading. Why the answer is right." }),
@@ -79,6 +80,7 @@ export default function quiz(pi: ExtensionAPI) {
 			"Use batches (3-6 questions) when probing understanding, single questions to verify a teaching step.",
 			"Each question automatically gets an 'I don't know' option — treat IDK as a strong signal about the edge of understanding, never penalize it.",
 			"Learners can attach free-text reasoning notes to answers; use them to calibrate.",
+			"The tool grades every answer itself against correctAnswer and shows the learner their graded results before returning — never announce, predict, or re-grade results yourself.",
 		].join(" "),
 		promptSnippet: "Graded multiple-choice quiz shown interactively to the learner",
 		parameters: QuizParams,
@@ -93,17 +95,30 @@ export default function quiz(pi: ExtensionAPI) {
 			if (params.questions.length === 0) {
 				throw new Error("No questions provided");
 			}
-			for (const q of params.questions) {
+			const questions: QuizQuestion[] = params.questions.map((q, i) => {
 				if (q.options.length < 2) throw new Error(`Question '${q.id}' needs at least 2 options`);
-				if (q.correctIndex < 1 || q.correctIndex > q.options.length) {
-					throw new Error(`Question '${q.id}': correctIndex ${q.correctIndex} out of range`);
+				const matches = q.options
+					.map((opt, j) => j)
+					.filter((j) => q.options[j].trim() === q.correctAnswer.trim());
+				if (matches.length === 0) {
+					throw new Error(
+						`Question '${q.id}': correctAnswer ${JSON.stringify(q.correctAnswer)} does not match any option verbatim. Options: ${q.options
+							.map((o) => JSON.stringify(o))
+							.join(", ")}`,
+					);
 				}
-			}
-
-			const questions: QuizQuestion[] = params.questions.map((q, i) => ({
-				...q,
-				label: q.label || `Q${i + 1}`,
-			}));
+				if (matches.length > 1) {
+					throw new Error(`Question '${q.id}': correctAnswer matches ${matches.length} options — options must be distinct`);
+				}
+				return {
+					id: q.id,
+					label: q.label || `Q${i + 1}`,
+					prompt: q.prompt,
+					options: q.options,
+					correctIndex: matches[0] + 1,
+					explanation: q.explanation,
+				};
+			});
 			const isMulti = questions.length > 1;
 			const totalTabs = questions.length + 1; // questions + Submit
 
@@ -112,6 +127,7 @@ export default function quiz(pi: ExtensionAPI) {
 				let optionIndex = 0;
 				let noteMode = false;
 				let cachedLines: string[] | undefined;
+				let graded: QuizResult | null = null;
 				const selections = new Map<string, number>(); // id → 1-based index or IDK
 				const notes = new Map<string, string>();
 
@@ -158,7 +174,13 @@ export default function quiz(pi: ExtensionAPI) {
 								note: notes.get(q.id),
 							};
 						});
-					done({ questions, answers, cancelled });
+					const outcome: QuizResult = { questions, answers, cancelled };
+					if (cancelled) {
+						done(outcome);
+						return;
+					}
+					graded = outcome;
+					refresh();
 				}
 
 				function advanceAfterAnswer() {
@@ -195,6 +217,10 @@ export default function quiz(pi: ExtensionAPI) {
 				};
 
 				function handleInput(data: string) {
+					if (graded) {
+						if (matchesKey(data, Key.enter) || matchesKey(data, Key.escape)) done(graded);
+						return;
+					}
 					if (noteMode) {
 						if (matchesKey(data, Key.escape)) {
 							noteMode = false;
@@ -283,6 +309,41 @@ export default function quiz(pi: ExtensionAPI) {
 					}
 
 					lines.push(theme.fg("accent", "─".repeat(renderWidth)));
+
+					if (graded) {
+						const score = graded.answers.filter((a) => a.correct).length;
+						addWrappedWithPrefix(" ", theme.fg("accent", theme.bold(`Results — ${score}/${graded.answers.length}`)));
+						lines.push("");
+						for (const a of graded.answers) {
+							const qq = questions.find((x) => x.id === a.id)!;
+							const opt = (i: number) => convertDollarSegments(qq.options[i - 1]);
+							const correctLabel = `${qq.correctIndex}. ${opt(qq.correctIndex)}`;
+							if (a.idk) {
+								addWrappedWithPrefix(
+									" ",
+									`${theme.fg("warning", "? ")}${theme.fg("text", `${qq.label}: I don't know`)}${theme.fg("muted", ` (answer: ${correctLabel})`)}`,
+								);
+							} else if (a.correct) {
+								addWrappedWithPrefix(
+									" ",
+									`${theme.fg("success", "✓ ")}${theme.fg("text", `${qq.label}: ${a.selectedIndex}. ${opt(a.selectedIndex)}`)}`,
+								);
+							} else {
+								addWrappedWithPrefix(
+									" ",
+									`${theme.fg("error", "✗ ")}${theme.fg("text", `${qq.label}: ${a.selectedIndex}. ${opt(a.selectedIndex)}`)}${theme.fg("muted", ` (→ ${correctLabel})`)}`,
+								);
+							}
+							if (qq.explanation) {
+								addWrappedWithPrefix("    ", theme.fg("dim", convertDollarSegments(qq.explanation)));
+							}
+						}
+						lines.push("");
+						addWrappedWithPrefix(" ", theme.fg("dim", "Enter to continue"));
+						lines.push(theme.fg("accent", "─".repeat(renderWidth)));
+						cachedLines = lines;
+						return lines;
+					}
 
 					if (isMulti) {
 						const tabs: string[] = ["← "];
@@ -408,6 +469,9 @@ export default function quiz(pi: ExtensionAPI) {
 			});
 			const score = result.answers.filter((a) => a.correct).length;
 			lines.push(`Score: ${score}/${result.answers.length}`);
+			lines.push(
+				"(This grading is authoritative and was already shown to the learner — do not re-grade or contradict it.)",
+			);
 
 			return {
 				content: [{ type: "text" as const, text: lines.join("\n") }],

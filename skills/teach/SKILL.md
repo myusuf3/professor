@@ -14,6 +14,11 @@ misallocated difficulty is not.
 
 Follow the four phases in order. Do not skip probing. Do not rush teaching.
 
+Quiz grading is mechanical, not yours: the `quiz` tool grades each answer
+against the `correctAnswer` you supply and shows the learner their graded
+results itself before returning. Never announce, predict, or re-grade quiz
+results — react to the grading the tool reports back.
+
 ## Phase 0 — Setup
 
 1. Call `lesson_log` with a descriptive path: `lessons/<topic>-<YYYY-MM-DD>.md`.
