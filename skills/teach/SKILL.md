@@ -21,14 +21,19 @@ results — react to the grading the tool reports back.
 
 ## Phase 0 — Setup
 
-1. Call `lesson_log` with a descriptive path: `lessons/<topic>-<YYYY-MM-DD>.md`.
+1. Call `lesson_state` (action "list"). If an active lesson already covers
+   this topic, ask the learner whether to resume it; on yes, follow
+   "Resuming a lesson" below instead of starting over.
+2. Call `lesson_log` with a descriptive path: `lessons/<topic>-<YYYY-MM-DD>.md`.
    Everything you write is mirrored there automatically — it is the learner's
    permanent artifact. Write LaTeX math normally (`$...$`, `$$...$$`); the file
    is rendered by KaTeX-aware viewers and the terminal shows an approximation.
-2. If earlier lesson files exist in `lessons/` for related topics, skim them:
+3. If earlier lesson files exist in `lessons/` for related topics, skim them:
    what was already mastered there is prior knowledge here.
-3. State the goal understanding in one sentence: what the learner will be able
-   to do or derive at the end.
+4. State the goal understanding in one sentence: what the learner will be able
+   to do or derive at the end. Then call `lesson_state` (action "open") with
+   the topic, that goal, and the log path — this creates the durable progress
+   record any future session resumes from.
 
 ## Phase 1 — Probe
 
@@ -60,11 +65,17 @@ Map the learner's current understanding with the `quiz` tool.
    empirical facts, precise theorem statements you might be fuzzy on).
    Use parallel mode — one task per independent claim. Correct the plan with
    the verdicts; never teach an UNCERTAIN claim as fact.
-3. Present the plan as a mermaid `flowchart TD`: nodes = concepts, edges =
+3. Commit the plan with `lesson_state` (action "plan"): one entry per
+   concept, `deps` for its prerequisites, and `status: "prior"` for nodes
+   the probe showed are already mastered. Node ids are load-bearing — reuse
+   them verbatim as quiz question ids so verification is recorded
+   automatically.
+4. Present the plan as a mermaid `flowchart TD`: nodes = concepts, edges =
    dependencies. Mark the probed edge (what they already hold) distinctly from
    what will be taught. This graph is a commitment, not decoration — every
    taught step must correspond to a node.
-4. Ask the learner to confirm or adjust the plan before teaching.
+5. Ask the learner to confirm or adjust the plan before teaching (re-commit
+   the plan if it changes).
 
 ## Phase 3 — Teach
 
@@ -80,18 +91,39 @@ Walk the DAG one node per turn. For each node:
 3. Verify before advancing: call `quiz` with 1-3 questions on this node —
    application questions (compute, predict, choose the valid inference), not
    recall of your own words.
+   Use the node's id as the question id — a correct answer then marks the
+   node verified in the lesson state automatically.
    - Correct → advance to the next node.
    - Wrong or IDK → do not repeat the same explanation louder. Diagnose from
      their selected distractor and reasoning note, re-derive the step from a
-     different angle, then re-quiz with a fresh question.
+     different angle, then re-quiz with a fresh question. If a supposedly
+     verified concept turns out shaky, demote it: `lesson_state` action
+     "mark" with status "pending".
 4. Every few nodes, show where you are in the DAG.
 
 Never teach ahead of the last verified node. If the learner asks a question,
 answer it fully before returning to the path — their curiosity outranks your
 plan.
 
+## Resuming a lesson
+
+When a fresh session picks up an in-progress lesson (via `/resume`, or an
+active lesson found in Phase 0):
+
+1. `lesson_state` (action "open") with the state file's path from "list".
+   Re-link the markdown log it names with `lesson_log`.
+2. Read the tail of the lesson log to recover tone and the last exchange;
+   the state file, not the log, is the authority on node statuses.
+3. Warm up before advancing: quiz 1-2 fresh questions on the most recently
+   verified nodes (retrieval practice — new questions, never reuse old
+   ones). A miss demotes that node to "pending"; re-derive it before moving
+   on.
+4. Continue Phase 3 at the first pending node whose prerequisites are all
+   prior or verified. Do not re-probe strands the state already settles.
+
 ## Wrap-up
 
 When the goal node is verified (or the learner stops): summarize what was
 built, in dependency order; list the nodes left unvisited as the natural next
-lesson; write both into the lesson log.
+lesson; write both into the lesson log, then call `lesson_state`
+(action "complete").

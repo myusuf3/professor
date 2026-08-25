@@ -40,17 +40,30 @@ pi -e /path/to/professor
 Or just ask to learn something — the `teach` skill triggers on its own.
 `/log <path>` inspects or overrides the lesson log file; `/log off` unlinks it.
 
+Progress is durable: every lesson keeps a machine-readable state file
+(`lessons/<topic>.state.json` — goal, concept DAG, per-node verification
+status, quiz history) next to the markdown log. A fresh session — even a
+different agent — picks up exactly where the last one stopped:
+
+```
+/resume              # most recent active lesson
+/resume <topic>      # a specific one
+/lessons             # list all lessons with progress
+```
+
 ## Pieces
 
 | Path | What |
 |---|---|
 | `extensions/quiz.ts` | `quiz` tool — interactive graded multiple choice. Digits or ↑↓/Enter to answer, `n` to attach a reasoning note, always an "I don't know" option (IDK is signal, not failure). Grading happens in-tool against the declared `correctAnswer` (matched by value, not index) and a results screen is shown to the learner before control returns to the model. |
 | `extensions/mdlog.ts` | `lesson_log` tool + `/log` command + LaTeX→Unicode terminal transformer. Session content appends to the linked markdown file. |
+| `extensions/lesson-state.ts` | `lesson_state` tool + `/lessons` command — durable progress: plan DAG and per-node verification in `lessons/<topic>.state.json`, auto-updated from quiz results (question id = node id). What `/resume` reads. |
 | `extensions/delegate.ts` | `delegate` tool — runs subagents as isolated child `pi` processes (parallel-capable). |
 | `agents/researcher.md` | Adversarial fact-checker for claims in the lesson plan. |
 | `agents/svg-artist.md` | Draws instructional SVGs, rasterizes them, and inspects the result before delivering. |
 | `skills/teach/SKILL.md` | The pedagogy: the probe → plan → teach protocol itself. Edit this to install your own learning philosophy. |
 | `prompts/teach.md` | `/teach <topic>` entry point. |
+| `prompts/resume.md` | `/resume [topic]` — continue an in-progress lesson in a fresh session. |
 
 ## Development
 
