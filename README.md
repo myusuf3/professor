@@ -49,6 +49,7 @@ different agent — picks up exactly where the last one stopped:
 /resume              # most recent active lesson
 /resume <topic>      # a specific one
 /lessons             # list all lessons with progress
+/gap <thing>         # flag something you don't know — the lesson commits to covering it
 ```
 
 ## Pieces
@@ -57,7 +58,7 @@ different agent — picks up exactly where the last one stopped:
 |---|---|
 | `extensions/quiz.ts` | `quiz` tool — interactive graded multiple choice. Digits or ↑↓/Enter to answer, `n` to attach a reasoning note, always an "I don't know" option (IDK is signal, not failure). Grading happens in-tool against the declared `correctAnswer` (matched by value, not index) and a results screen is shown to the learner before control returns to the model. |
 | `extensions/mdlog.ts` | `lesson_log` tool + `/log` command + LaTeX→Unicode terminal transformer. Session content appends to the linked markdown file. |
-| `extensions/lesson-state.ts` | `lesson_state` tool + `/lessons` command — durable progress: plan DAG and per-node verification in `lessons/<topic>.state.json`, auto-updated from quiz results (question id = node id). What `/resume` reads. |
+| `extensions/lesson-state.ts` | `lesson_state` tool + `/lessons` and `/gap` commands — durable progress: plan DAG, per-node verification, and learner-flagged gaps in `lessons/<topic>.state.json`, auto-updated from quiz results (question id = node id). What `/resume` reads. |
 | `extensions/delegate.ts` | `delegate` tool — runs subagents as isolated child `pi` processes (parallel-capable). |
 | `agents/researcher.md` | Adversarial fact-checker for claims in the lesson plan. |
 | `agents/svg-artist.md` | Draws instructional SVGs, rasterizes them, and inspects the result before delivering. |

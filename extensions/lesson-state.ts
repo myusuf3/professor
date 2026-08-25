@@ -38,6 +38,13 @@ interface LessonNode {
 	attempts: Attempt[];
 }
 
+interface Gap {
+	id: string;
+	text: string;
+	at: string;
+	status: "open" | "covered";
+}
+
 interface LessonState {
 	version: 1;
 	topic: string;
@@ -47,16 +54,18 @@ interface LessonState {
 	createdAt: string;
 	updatedAt: string;
 	nodes: LessonNode[];
+	gaps: Gap[];
 }
 
 const NODE_STATUSES = ["prior", "pending", "verified"] as ["prior", "pending", "verified"];
 
 const Params = Type.Object({
-	action: StringEnum(["open", "plan", "mark", "status", "list", "complete"] as [string, ...string[]], {
+	action: StringEnum(["open", "plan", "mark", "gap", "status", "list", "complete"] as [string, ...string[]], {
 		description: [
 			"open: create a lesson state file (topic+goal) or load an existing one (path) and make it current.",
 			"plan: commit the full node DAG.",
 			"mark: set one node's status.",
+			"gap: record something the learner flagged as not knowing (text), or mark a gap covered (gap id).",
 			"status: read the current lesson's full state.",
 			"list: find every lesson state under lessons/ with progress.",
 			"complete: mark the current lesson finished.",
@@ -86,6 +95,8 @@ const Params = Type.Object({
 		),
 	),
 	node: Type.Optional(Type.String({ description: "mark: node id" })),
+	text: Type.Optional(Type.String({ description: "gap: what the learner doesn't know, in their words" })),
+	gap: Type.Optional(Type.String({ description: "gap: id of a gap to mark covered" })),
 	nodeStatus: Type.Optional(StringEnum(NODE_STATUSES, { description: "mark: new status" })),
 });
 
@@ -105,7 +116,9 @@ function loadState(file: string): LessonState {
 		throw new Error(`lesson_state: cannot read ${file}: ${err}`);
 	}
 	try {
-		return JSON.parse(raw) as LessonState;
+		const state = JSON.parse(raw) as LessonState;
+		if (!Array.isArray(state.gaps)) state.gaps = [];
+		return state;
 	} catch (err) {
 		throw new Error(`lesson_state: ${file} is not valid JSON: ${err}`);
 	}
@@ -132,7 +145,20 @@ function summarize(state: LessonState): string {
 	if (state.status === "complete") return `${state.topic} — complete (${verified}/${teachable.length})`;
 	if (teachable.length === 0) return `${state.topic} — no plan committed yet`;
 	const next = nextNode(state);
-	return `${state.topic} — ${verified}/${teachable.length} verified${next ? `, next: ${next.id}` : ""}`;
+	const open = state.gaps.filter((g) => g.status === "open").length;
+	const gapNote = open > 0 ? `, ${open} open gap${open === 1 ? "" : "s"}` : "";
+	return `${state.topic} — ${verified}/${teachable.length} verified${next ? `, next: ${next.id}` : ""}${gapNote}`;
+}
+
+function addGap(state: LessonState, text: string): Gap {
+	const gap: Gap = {
+		id: `g${state.gaps.length + 1}`,
+		text,
+		at: new Date().toISOString(),
+		status: "open",
+	};
+	state.gaps.push(gap);
+	return gap;
 }
 
 function scanLessons(cwd: string): { file: string; state: LessonState }[] {
@@ -234,6 +260,7 @@ export default function lessonState(pi: ExtensionAPI) {
 							createdAt: new Date().toISOString(),
 							updatedAt: new Date().toISOString(),
 							nodes: [],
+							gaps: [],
 						};
 					}
 					saveState(file, state);
@@ -281,6 +308,25 @@ export default function lessonState(pi: ExtensionAPI) {
 					return ok(`${node.id} → ${node.status}. ${summarize(state)}`, state);
 				}
 
+				case "gap": {
+					if (!statePath) throw new Error("No lesson open — call action 'open' first");
+					const state = loadState(statePath);
+					if (params.gap) {
+						const g = state.gaps.find((x) => x.id === params.gap);
+						if (!g) {
+							const open = state.gaps.filter((x) => x.status === "open").map((x) => x.id);
+							throw new Error(`Unknown gap '${params.gap}'. Open gaps: ${open.join(", ") || "none"}`);
+						}
+						g.status = "covered";
+						saveState(statePath, state);
+						return ok(`Gap ${g.id} covered: ${g.text}. ${summarize(state)}`, state);
+					}
+					if (!params.text) throw new Error("gap requires text (to record) or gap (id, to mark covered)");
+					const g = addGap(state, params.text);
+					saveState(statePath, state);
+					return ok(`Gap recorded as ${g.id}: ${g.text}`, state);
+				}
+
 				case "status": {
 					if (!statePath) throw new Error("No lesson open — call action 'open' first (or 'list' to find one)");
 					const state = loadState(statePath);
@@ -325,6 +371,29 @@ export default function lessonState(pi: ExtensionAPI) {
 				return;
 			}
 			ctx.ui.notify(found.map((f) => summarize(f.state)).join("\n"), "info");
+		},
+	});
+
+	pi.registerCommand("gap", {
+		description: "Flag something you don't know so the lesson covers it (/gap <what>; bare /gap lists open gaps)",
+		handler: async (args, ctx) => {
+			if (!statePath) {
+				ctx.ui.notify("No lesson open — start one with /teach or pick one up with /resume", "info");
+				return;
+			}
+			const state = loadState(statePath);
+			const text = args.trim();
+			if (!text) {
+				const open = state.gaps.filter((g) => g.status === "open");
+				ctx.ui.notify(
+					open.length === 0 ? "No open gaps" : open.map((g) => `${g.id}: ${g.text}`).join("\n"),
+					"info",
+				);
+				return;
+			}
+			const g = addGap(state, text);
+			saveState(statePath, state);
+			ctx.ui.notify(`Gap ${g.id} noted: ${text} — the teacher will fold it in at the next checkpoint`, "info");
 		},
 	});
 

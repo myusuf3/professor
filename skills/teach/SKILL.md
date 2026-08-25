@@ -105,6 +105,24 @@ Never teach ahead of the last verified node. If the learner asks a question,
 answer it fully before returning to the path — their curiosity outranks your
 plan.
 
+## Gaps
+
+"I don't know" is welcome outside quizzes too. Whenever the learner flags
+something they don't know or want covered — with `/gap <thing>` or just by
+saying so — record it with `lesson_state` (action "gap", text in their
+words). A gap is a commitment, not a note:
+
+- On the dependency path to the goal → add it to the plan as a node
+  (re-commit with action "plan") in its proper place.
+- Off the path → cover it as a brief aside at the next natural checkpoint,
+  or schedule it for after the goal node.
+- Once covered (with a verifying quiz question when it warrants one), mark
+  it: action "gap" with the gap's id.
+
+Check open gaps whenever you show the DAG and before wrap-up. Never finish
+with an open gap unacknowledged — cover it, or explicitly hand it to the
+next lesson.
+
 ## Resuming a lesson
 
 When a fresh session picks up an in-progress lesson (via `/resume`, or an
@@ -118,12 +136,14 @@ active lesson found in Phase 0):
    verified nodes (retrieval practice — new questions, never reuse old
    ones). A miss demotes that node to "pending"; re-derive it before moving
    on.
-4. Continue Phase 3 at the first pending node whose prerequisites are all
+4. Check the state's open gaps and fold them in as the Gaps section
+   directs.
+5. Continue Phase 3 at the first pending node whose prerequisites are all
    prior or verified. Do not re-probe strands the state already settles.
 
 ## Wrap-up
 
 When the goal node is verified (or the learner stops): summarize what was
-built, in dependency order; list the nodes left unvisited as the natural next
-lesson; write both into the lesson log, then call `lesson_state`
-(action "complete").
+built, in dependency order; list the nodes left unvisited and any still-open
+gaps as the natural next lesson; write both into the lesson log, then call
+`lesson_state` (action "complete").
