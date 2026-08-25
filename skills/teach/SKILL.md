@@ -24,8 +24,10 @@ results — react to the grading the tool reports back.
 1. Call `lesson_state` (action "list"). If an active lesson already covers
    this topic, ask the learner whether to resume it; on yes, follow
    "Resuming a lesson" below instead of starting over.
-2. Call `lesson_log` with a descriptive path: `lessons/<topic>-<YYYY-MM-DD>.md`.
-   Everything you write is mirrored there automatically — it is the learner's
+2. Call `lesson_log` with the lesson's folder path — `lessons/<topic-slug>/lesson.md`
+   — and pass the topic as `title`. Every lesson owns one folder holding its
+   log, its state, and its diagrams. Everything you write is mirrored there
+   automatically — it is the learner's
    permanent artifact. Write LaTeX math normally (`$...$`, `$$...$$`); the file
    is rendered by KaTeX-aware viewers and the terminal shows an approximation.
 3. If earlier lesson files exist in `lessons/` for related topics, skim them:
@@ -85,9 +87,9 @@ Walk the DAG one node per turn. For each node:
    derive, don't assert. Prefer "here is the problem this construction solves"
    over definitions from nowhere. It must be digestible in one reading.
 2. When the concept is geometric or structural, request a diagram:
-   `delegate` → svg-artist with a precise description and a target path next
-   to the lesson file (`lessons/assets/<slug>.svg`). Embed it in your reply as
-   `![caption](assets/<slug>.svg)`.
+   `delegate` → svg-artist with a precise description and a target path in
+   the lesson's folder (`lessons/<topic-slug>/assets/<slug>.svg`). Embed it in
+   your reply as `![caption](assets/<slug>.svg)`.
 3. Verify before advancing: call `quiz` with 1-3 questions on this node —
    application questions (compute, predict, choose the valid inference), not
    recall of your own words.

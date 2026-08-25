@@ -1,12 +1,15 @@
 /**
  * lesson-state — durable, machine-readable progress tracking for lessons.
  *
- * The lesson log (mdlog) is the learner's artifact; this is the teacher's:
- * a JSON sidecar next to the log (`lessons/<topic>.state.json`) recording
- * topic, goal, the planned DAG, and per-node verification status with quiz
- * attempt history. A fresh agent session finds it with `lesson_state`
- * (action "list"), opens it, and picks up exactly where the last session
- * stopped — see the "Resuming a lesson" section of the teach skill.
+ * The lesson log (mdlog) is the learner's artifact; this is the teacher's.
+ * Each lesson owns a folder — `lessons/<topic-slug>/` with `lesson.md`,
+ * `state.json`, and `assets/` — and state.json records topic, goal, the
+ * planned DAG, and per-node verification status with quiz attempt history.
+ * A fresh agent session finds it with `lesson_state` (action "list"), opens
+ * it, and picks up exactly where the last session stopped — see the
+ * "Resuming a lesson" section of the teach skill. Legacy flat-layout
+ * lessons (`lessons/<slug>.state.json` + sibling .md) are migrated into
+ * folders whenever they are encountered.
  *
  * Quiz results are captured automatically: answers whose question id
  * matches a plan node id are appended to that node's attempt history, and
@@ -74,7 +77,9 @@ const Params = Type.Object({
 	topic: Type.Optional(Type.String({ description: "open: lesson topic" })),
 	goal: Type.Optional(Type.String({ description: "open: one-sentence goal understanding" })),
 	log: Type.Optional(
-		Type.String({ description: "open: markdown lesson log path — the state file is stored alongside it" }),
+		Type.String({
+			description: "open: markdown lesson log path (lessons/<topic-slug>/lesson.md) — state.json is stored in the same folder",
+		}),
 	),
 	path: Type.Optional(
 		Type.String({ description: "open: explicit state file path (e.g. from a previous 'list') to resume" }),
@@ -161,7 +166,18 @@ function addGap(state: LessonState, text: string): Gap {
 	return gap;
 }
 
-function scanLessons(cwd: string): { file: string; state: LessonState }[] {
+/** Where a legacy flat state path (`lessons/<slug>.state.json`) lives after migration. */
+export function legacyAlt(p: string): string | null {
+	if (!p.endsWith(".state.json")) return null;
+	return path.join(path.dirname(p), path.basename(p, ".state.json"), "state.json");
+}
+
+/**
+ * Migrate legacy flat-layout lessons into per-lesson folders:
+ * lessons/<slug>.state.json (+ sibling .md log and shared lessons/assets/)
+ * → lessons/<slug>/{state.json, lesson.md, assets/}. Returns the moves made.
+ */
+export function migrateLegacyLessons(cwd: string): { from: string; to: string }[] {
 	const dir = path.join(cwd, "lessons");
 	let entries: string[];
 	try {
@@ -169,9 +185,56 @@ function scanLessons(cwd: string): { file: string; state: LessonState }[] {
 	} catch {
 		return [];
 	}
-	const found: { file: string; state: LessonState }[] = [];
+	const moves: { from: string; to: string }[] = [];
 	for (const f of entries.filter((f) => f.endsWith(".state.json"))) {
-		const file = path.join(dir, f);
+		const from = path.join(dir, f);
+		const folder = path.join(dir, path.basename(f, ".state.json"));
+		const to = path.join(folder, "state.json");
+		try {
+			const state = loadState(from);
+			fs.mkdirSync(path.join(folder, "assets"), { recursive: true });
+			const oldLog = state.log
+				? path.isAbsolute(state.log)
+					? state.log
+					: path.join(cwd, state.log)
+				: undefined;
+			if (oldLog && path.dirname(oldLog) === dir && fs.existsSync(oldLog)) {
+				// carry the diagrams the log references from the shared assets/ dir
+				const md = fs.readFileSync(oldLog, "utf8");
+				for (const m of md.matchAll(/\bassets\/([A-Za-z0-9._-]+)/g)) {
+					const asset = path.join(dir, "assets", m[1]);
+					if (fs.existsSync(asset)) fs.renameSync(asset, path.join(folder, "assets", m[1]));
+				}
+				const newLog = path.join(folder, "lesson.md");
+				fs.renameSync(oldLog, newLog);
+				state.log = newLog;
+			}
+			saveState(to, state);
+			fs.rmSync(from);
+			moves.push({ from, to });
+		} catch {
+			// unreadable/partial lesson — leave it untouched
+		}
+	}
+	try {
+		fs.rmdirSync(path.join(dir, "assets")); // only removes it if now empty
+	} catch {}
+	return moves;
+}
+
+function scanLessons(cwd: string): { file: string; state: LessonState }[] {
+	migrateLegacyLessons(cwd);
+	const dir = path.join(cwd, "lessons");
+	let entries: fs.Dirent[];
+	try {
+		entries = fs.readdirSync(dir, { withFileTypes: true });
+	} catch {
+		return [];
+	}
+	const found: { file: string; state: LessonState }[] = [];
+	for (const e of entries.filter((e) => e.isDirectory())) {
+		const file = path.join(dir, e.name, "state.json");
+		if (!fs.existsSync(file)) continue;
 		try {
 			found.push({ file, state: loadState(file) });
 		} catch {
@@ -189,6 +252,16 @@ interface QuizResultDetails {
 
 export default function lessonState(pi: ExtensionAPI) {
 	let statePath: string | null = null;
+
+	/** After a migration, follow the current lesson's state file to its new home. */
+	function syncStatePath() {
+		if (!statePath || fs.existsSync(statePath)) return;
+		const alt = legacyAlt(statePath);
+		if (alt && fs.existsSync(alt)) {
+			statePath = alt;
+			pi.appendEntry("lesson-state-target", { path: alt });
+		}
+	}
 
 	function reconstruct(ctx: { sessionManager: { getBranch(): unknown[] } }) {
 		statePath = null;
@@ -224,6 +297,7 @@ export default function lessonState(pi: ExtensionAPI) {
 			switch (params.action) {
 				case "list": {
 					const found = scanLessons(ctx.cwd);
+					syncStatePath();
 					if (found.length === 0) return ok("No lesson state files under lessons/.");
 					const lines = found.map((f) => `${f.file}\n  ${summarize(f.state)} [${f.state.status}] updated ${f.state.updatedAt}`);
 					lines.push("Resume one with action 'open' and its path.");
@@ -234,11 +308,23 @@ export default function lessonState(pi: ExtensionAPI) {
 					let file: string;
 					if (params.path) {
 						file = path.isAbsolute(params.path) ? params.path : path.join(ctx.cwd, params.path);
+						// legacy flat path → migrate everything, then follow the file to its folder
+						if (/[^/\\]\.state\.json$/.test(file) && !fs.existsSync(file)) {
+							migrateLegacyLessons(ctx.cwd);
+							const alt = legacyAlt(file);
+							if (alt && fs.existsSync(alt)) file = alt;
+						}
 					} else if (params.log) {
 						const log = path.isAbsolute(params.log) ? params.log : path.join(ctx.cwd, params.log);
-						file = log.replace(/\.md$/, "") + ".state.json";
+						const folder = path.dirname(log);
+						if (path.basename(folder) === "lessons") {
+							throw new Error(
+								"Each lesson lives in its own folder — use lessons/<topic-slug>/lesson.md as the log path",
+							);
+						}
+						file = path.join(folder, "state.json");
 					} else if (params.topic) {
-						file = path.join(ctx.cwd, "lessons", `${slugify(params.topic)}.state.json`);
+						file = path.join(ctx.cwd, "lessons", slugify(params.topic), "state.json");
 					} else {
 						throw new Error("open requires topic (new lesson), log, or path (resume)");
 					}
@@ -262,6 +348,7 @@ export default function lessonState(pi: ExtensionAPI) {
 							nodes: [],
 							gaps: [],
 						};
+						fs.mkdirSync(path.join(path.dirname(file), "assets"), { recursive: true });
 					}
 					saveState(file, state);
 					statePath = file;
@@ -366,6 +453,7 @@ export default function lessonState(pi: ExtensionAPI) {
 		description: "List lessons and their progress",
 		handler: async (_args, ctx) => {
 			const found = scanLessons(ctx.cwd);
+			syncStatePath();
 			if (found.length === 0) {
 				ctx.ui.notify("No lessons found under lessons/", "info");
 				return;
