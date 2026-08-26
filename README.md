@@ -58,7 +58,7 @@ where the last one stopped:
 
 | Path | What |
 |---|---|
-| `extensions/quiz.ts` | `quiz` tool — interactive graded multiple choice. Digits or ↑↓/Enter to answer, `n` to attach a reasoning note, always an "I don't know" option (IDK is signal, not failure). Grading happens in-tool against the declared `correctAnswer` (matched by value, not index) and a results screen is shown to the learner before control returns to the model. |
+| `extensions/quiz.ts` | `quiz` tool — interactive graded multiple choice. Digits or ↑↓/Enter to answer, `n` to attach a reasoning note, always an "I don't know" option (IDK is signal, not failure). Grading happens in-tool against the declared `correctAnswer` (matched by value, not index; options shuffle before display), `multiSelect` questions grade as an exact set, and a results screen is shown to the learner before control returns to the model. |
 | `extensions/ask-user-question.ts` | `ask_user_question` tool — ungraded structured input (single/multi-select with an always-present "Other", or free text) for goals, preferences, and decisions. |
 | `extensions/mdlog.ts` | `lesson_log` tool + `/log` command + LaTeX→Unicode terminal transformer. Session content appends to the linked markdown file. |
 | `extensions/lesson-state.ts` | `lesson_state` tool + `/lessons` and `/gap` commands — durable progress: plan DAG, per-node verification, and learner-flagged gaps in `lessons/<topic>/state.json`, auto-updated from quiz results (question id = node id). What `/resume` reads. |

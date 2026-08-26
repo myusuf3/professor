@@ -29,13 +29,14 @@ interface QuizQuestion {
 	label: string;
 	prompt: string;
 	options: string[];
-	correctIndex: number; // 1-based
+	correctIndices: number[]; // 1-based, sorted; singleton unless multi
+	multi: boolean;
 	explanation?: string;
 }
 
 interface QuizAnswer {
 	id: string;
-	selectedIndex: number; // 1-based; -1 = "I don't know"
+	selectedIndices: number[]; // 1-based, sorted; empty when idk
 	correct: boolean;
 	idk: boolean;
 	note?: string;
@@ -56,12 +57,18 @@ const QuizParams = Type.Object({
 			),
 			prompt: Type.String({ description: "The question text. May contain LaTeX ($...$)." }),
 			options: Type.Array(Type.String(), {
-				description: "2-5 answer options. Plausible distractors, one correct.",
+				description: "2-5 answer options. Plausible distractors; one correct (several with multiSelect).",
 			}),
-			correctAnswer: Type.String({
+			correctAnswer: Type.Union([Type.String(), Type.Array(Type.String())], {
 				description:
-					"The correct option's exact text, verbatim from `options`. Grading is done by the tool against this value.",
+					"The correct option's exact text, verbatim from `options` (an array of texts for multiSelect). Grading is done by the tool against this value.",
 			}),
+			multiSelect: Type.Optional(
+				Type.Boolean({
+					description:
+						"Select-all-that-apply: the learner must select the exact set in correctAnswer (graded as a set; no partial credit). Default false.",
+				}),
+			),
 			explanation: Type.String({
 				description:
 					"Shown to the learner after grading. Why the answer is right — address the tempting distractor, not just the fact.",
@@ -79,6 +86,21 @@ const QuizParams = Type.Object({
 
 const IDK = -1;
 
+/** The harness sometimes JSON-stringifies array arguments; unwrap that. */
+function coerceCorrectAnswers(raw: string | string[]): string[] {
+	if (Array.isArray(raw)) return raw;
+	const s = raw.trim();
+	if (s.startsWith("[") && s.endsWith("]")) {
+		try {
+			const parsed: unknown = JSON.parse(s);
+			if (Array.isArray(parsed) && parsed.every((x) => typeof x === "string")) return parsed as string[];
+		} catch {
+			// fall through — treat as a literal single answer
+		}
+	}
+	return [raw];
+}
+
 export default function quiz(pi: ExtensionAPI) {
 	pi.registerTool({
 		name: "quiz",
@@ -91,6 +113,7 @@ export default function quiz(pi: ExtensionAPI) {
 			"The tool grades every answer itself against correctAnswer and shows the learner their graded results before returning — never announce, predict, or re-grade results yourself.",
 			"Options are shuffled before display, so never refer to options by number or letter in prose.",
 			"Craft each distractor as a diagnostic for one specific misconception, keep all options the same length and register so the answer never stands out by format, and never add your own 'I don't know' option.",
+			"multiSelect makes a question select-all-that-apply: correctAnswer becomes the array of correct option texts and grading is exact-set.",
 		].join(" "),
 		promptSnippet: "Graded multiple-choice quiz shown interactively to the learner",
 		parameters: QuizParams,
@@ -107,18 +130,32 @@ export default function quiz(pi: ExtensionAPI) {
 			}
 			const questions: QuizQuestion[] = params.questions.map((q, i) => {
 				if (q.options.length < 2) throw new Error(`Question '${q.id}' needs at least 2 options`);
-				const matches = q.options
-					.map((opt, j) => j)
-					.filter((j) => q.options[j].trim() === q.correctAnswer.trim());
-				if (matches.length === 0) {
+				const multi = q.multiSelect === true;
+				const wants = coerceCorrectAnswers(q.correctAnswer);
+				if (!multi && wants.length !== 1) {
 					throw new Error(
-						`Question '${q.id}': correctAnswer ${JSON.stringify(q.correctAnswer)} does not match any option verbatim. Options: ${q.options
-							.map((o) => JSON.stringify(o))
-							.join(", ")}`,
+						`Question '${q.id}': got ${wants.length} correct answers — set multiSelect for select-all-that-apply`,
 					);
 				}
-				if (matches.length > 1) {
-					throw new Error(`Question '${q.id}': correctAnswer matches ${matches.length} options — options must be distinct`);
+				const matchIdx = wants.map((w) => {
+					const ms = q.options.map((_, j) => j).filter((j) => q.options[j].trim() === w.trim());
+					if (ms.length === 0) {
+						throw new Error(
+							`Question '${q.id}': correctAnswer ${JSON.stringify(w)} does not match any option verbatim. Options: ${q.options
+								.map((o) => JSON.stringify(o))
+								.join(", ")}`,
+						);
+					}
+					if (ms.length > 1) {
+						throw new Error(`Question '${q.id}': correctAnswer matches ${ms.length} options — options must be distinct`);
+					}
+					return ms[0];
+				});
+				if (new Set(matchIdx).size !== matchIdx.length) {
+					throw new Error(`Question '${q.id}': correctAnswer lists the same option more than once`);
+				}
+				if (matchIdx.length >= q.options.length) {
+					throw new Error(`Question '${q.id}': every option is marked correct — a question needs at least one distractor`);
 				}
 				// Shuffle display order (grading is by value, so this is free) —
 				// otherwise the correct answer sits wherever the model habitually puts it.
@@ -134,7 +171,8 @@ export default function quiz(pi: ExtensionAPI) {
 					label: q.label || `Q${i + 1}`,
 					prompt: q.prompt,
 					options: order.map((j) => q.options[j]),
-					correctIndex: order.indexOf(matches[0]) + 1,
+					correctIndices: matchIdx.map((m) => order.indexOf(m) + 1).sort((a, b) => a - b),
+					multi,
 					explanation: q.explanation,
 				};
 			});
@@ -149,7 +187,7 @@ export default function quiz(pi: ExtensionAPI) {
 				let cachedLines: string[] | undefined;
 				let cachedWidth = -1; // resize re-renders without invalidate — stale wider lines would crash
 				let graded: QuizResult | null = null;
-				const selections = new Map<string, number>(); // id → 1-based index or IDK
+				const selections = new Map<string, number[]>(); // id → 1-based indices, or [IDK]
 				const notes = new Map<string, string>();
 
 				const editorTheme: EditorTheme = {
@@ -187,13 +225,13 @@ export default function quiz(pi: ExtensionAPI) {
 						.filter((q) => selections.has(q.id))
 						.map((q) => {
 							const sel = selections.get(q.id)!;
-							return {
-								id: q.id,
-								selectedIndex: sel,
-								correct: sel === q.correctIndex,
-								idk: sel === IDK,
-								note: notes.get(q.id),
-							};
+							const idk = sel[0] === IDK;
+							const selectedIndices = idk ? [] : [...sel].sort((a, b) => a - b);
+							const correct =
+								!idk &&
+								selectedIndices.length === q.correctIndices.length &&
+								selectedIndices.every((v, k) => v === q.correctIndices[k]);
+							return { id: q.id, selectedIndices, correct, idk, note: notes.get(q.id) };
 						});
 					const outcome: QuizResult = { questions, answers, cancelled };
 					if (cancelled) {
@@ -221,8 +259,30 @@ export default function quiz(pi: ExtensionAPI) {
 					const q = currentQuestion();
 					if (!q) return;
 					const isIdk = displayIndex === optionCount(q) - 1;
-					selections.set(q.id, isIdk ? IDK : displayIndex + 1);
+					selections.set(q.id, isIdk ? [IDK] : [displayIndex + 1]);
 					advanceAfterAnswer();
+				}
+
+				/** multiSelect questions: toggle membership; IDK is exclusive. */
+				function toggleOption(displayIndex: number) {
+					const q = currentQuestion();
+					if (!q) return;
+					const isIdk = displayIndex === optionCount(q) - 1;
+					const prev = selections.get(q.id);
+					if (isIdk) {
+						if (prev?.[0] === IDK) selections.delete(q.id);
+						else selections.set(q.id, [IDK]);
+						refresh();
+						return;
+					}
+					const current = prev && prev[0] !== IDK ? [...prev] : [];
+					const value = displayIndex + 1;
+					const at = current.indexOf(value);
+					if (at === -1) current.push(value);
+					else current.splice(at, 1);
+					if (current.length === 0) selections.delete(q.id);
+					else selections.set(q.id, current);
+					refresh();
 				}
 
 				editor.onSubmit = (value) => {
@@ -289,10 +349,17 @@ export default function quiz(pi: ExtensionAPI) {
 						refresh();
 						return;
 					}
-					// Digit shortcut selects that option directly
+					// Digit shortcut selects (or, on multiSelect, toggles) that option
 					if (/^[1-9]$/.test(data)) {
 						const idx = Number(data) - 1;
-						if (idx < optionCount(q)) selectOption(idx);
+						if (idx < optionCount(q)) {
+							if (q.multi) toggleOption(idx);
+							else selectOption(idx);
+						}
+						return;
+					}
+					if (q.multi && matchesKey(data, Key.space)) {
+						toggleOption(optionIndex);
 						return;
 					}
 					if (data === "n") {
@@ -302,7 +369,11 @@ export default function quiz(pi: ExtensionAPI) {
 						return;
 					}
 					if (matchesKey(data, Key.enter)) {
-						selectOption(optionIndex);
+						if (q.multi) {
+							if (selections.has(q.id)) advanceAfterAnswer();
+						} else {
+							selectOption(optionIndex);
+						}
 						return;
 					}
 					if (matchesKey(data, Key.escape)) {
@@ -339,7 +410,8 @@ export default function quiz(pi: ExtensionAPI) {
 						for (const a of graded.answers) {
 							const qq = questions.find((x) => x.id === a.id)!;
 							const opt = (i: number) => convertDollarSegments(qq.options[i - 1]);
-							const correctLabel = `${qq.correctIndex}. ${opt(qq.correctIndex)}`;
+							const correctLabel = qq.correctIndices.map((c) => `${c}. ${opt(c)}`).join(", ");
+							const selLabel = a.selectedIndices.map((s) => `${s}. ${opt(s)}`).join(", ");
 							if (a.idk) {
 								addWrappedWithPrefix(
 									" ",
@@ -348,12 +420,12 @@ export default function quiz(pi: ExtensionAPI) {
 							} else if (a.correct) {
 								addWrappedWithPrefix(
 									" ",
-									`${theme.fg("success", "✓ ")}${theme.fg("text", `${qq.label}: ${a.selectedIndex}. ${opt(a.selectedIndex)}`)}`,
+									`${theme.fg("success", "✓ ")}${theme.fg("text", `${qq.label}: ${selLabel}`)}`,
 								);
 							} else {
 								addWrappedWithPrefix(
 									" ",
-									`${theme.fg("error", "✗ ")}${theme.fg("text", `${qq.label}: ${a.selectedIndex}. ${opt(a.selectedIndex)}`)}${theme.fg("muted", ` (→ ${correctLabel})`)}`,
+									`${theme.fg("error", "✗ ")}${theme.fg("text", `${qq.label}: ${selLabel}`)}${theme.fg("muted", ` (→ ${correctLabel})`)}`,
 								);
 							}
 							if (qq.explanation) {
@@ -399,7 +471,11 @@ export default function quiz(pi: ExtensionAPI) {
 							const sel = selections.get(question.id);
 							if (sel === undefined) continue;
 							const label =
-								sel === IDK ? "I don't know" : `${sel}. ${convertDollarSegments(question.options[sel - 1])}`;
+								sel[0] === IDK
+									? "I don't know"
+									: sel
+											.map((s) => `${s}. ${convertDollarSegments(question.options[s - 1])}`)
+											.join(", ");
 							const noteMark = notes.has(question.id) ? theme.fg("dim", " ✎") : "";
 							addWrappedWithPrefix(
 								" ",
@@ -422,14 +498,14 @@ export default function quiz(pi: ExtensionAPI) {
 						const displayOptions = [...q.options.map(convertDollarSegments), "I don't know"];
 						for (let i = 0; i < displayOptions.length; i++) {
 							const selected = i === optionIndex;
+							const isIdkOption = i === displayOptions.length - 1;
 							const chosen = (() => {
 								const sel = selections.get(q.id);
 								if (sel === undefined) return false;
-								return sel === IDK ? i === displayOptions.length - 1 : sel === i + 1;
+								return sel[0] === IDK ? isIdkOption : sel.includes(i + 1);
 							})();
 							const prefix = selected ? theme.fg("accent", "> ") : "  ";
-							const marker = chosen ? "● " : "";
-							const isIdkOption = i === displayOptions.length - 1;
+							const marker = q.multi && !isIdkOption ? (chosen ? "[x] " : "[ ] ") : chosen ? "● " : "";
 							const color = selected ? "accent" : isIdkOption ? "muted" : "text";
 							addWrappedWithPrefix(prefix, theme.fg(color, `${marker}${i + 1}. ${displayOptions[i]}`));
 						}
@@ -448,9 +524,10 @@ export default function quiz(pi: ExtensionAPI) {
 
 					lines.push("");
 					if (!noteMode) {
+						const answerHint = q?.multi ? "Space/digits toggle • Enter confirm" : "↑↓/digits answer";
 						const help = isMulti
-							? "↑↓/digits answer • n note • Tab/←→ questions • Esc cancel"
-							: "↑↓/digits answer • Enter confirm • n note • Esc cancel";
+							? `${answerHint} • n note • Tab/←→ questions • Esc cancel`
+							: `${answerHint}${q?.multi ? "" : " • Enter confirm"} • n note • Esc cancel`;
 						addWrappedWithPrefix(" ", theme.fg("dim", help));
 					}
 					lines.push(theme.fg("accent", "─".repeat(renderWidth)));
@@ -478,14 +555,16 @@ export default function quiz(pi: ExtensionAPI) {
 
 			const lines = result.answers.map((a) => {
 				const q = questions.find((qq) => qq.id === a.id)!;
-				const correctLabel = `${q.correctIndex}. "${q.options[q.correctIndex - 1]}"`;
+				const optTxt = (i: number) => `${i}. "${q.options[i - 1]}"`;
+				const correctLabel = q.correctIndices.map(optTxt).join(", ");
+				const selLabel = a.selectedIndices.map(optTxt).join(", ");
 				let line: string;
 				if (a.idk) {
 					line = `${q.label} (${a.id}): I DON'T KNOW — correct was ${correctLabel}`;
 				} else if (a.correct) {
-					line = `${q.label} (${a.id}): CORRECT — selected ${a.selectedIndex}. "${q.options[a.selectedIndex - 1]}"`;
+					line = `${q.label} (${a.id}): CORRECT — selected ${selLabel}`;
 				} else {
-					line = `${q.label} (${a.id}): WRONG — selected ${a.selectedIndex}. "${q.options[a.selectedIndex - 1]}", correct was ${correctLabel}`;
+					line = `${q.label} (${a.id}): WRONG — selected ${selLabel}, correct was ${correctLabel}`;
 				}
 				if (a.note) line += `\n  learner's reasoning: ${a.note}`;
 				return line;
@@ -521,14 +600,13 @@ export default function quiz(pi: ExtensionAPI) {
 			const lines = details.answers.map((a) => {
 				const q = details.questions.find((qq) => qq.id === a.id)!;
 				const opt = (i: number) => convertDollarSegments(q.options[i - 1]);
+				const sel = a.selectedIndices.map((s) => `${s}. ${opt(s)}`).join(", ");
+				const corr = q.correctIndices.map((c) => `${c}. ${opt(c)}`).join(", ");
 				if (a.idk) return `${theme.fg("warning", "? ")}${q.label}: I don't know`;
 				if (a.correct) {
-					return `${theme.fg("success", "✓ ")}${q.label}: ${a.selectedIndex}. ${opt(a.selectedIndex)}`;
+					return `${theme.fg("success", "✓ ")}${q.label}: ${sel}`;
 				}
-				return `${theme.fg("error", "✗ ")}${q.label}: ${a.selectedIndex}. ${opt(a.selectedIndex)} ${theme.fg(
-					"muted",
-					`(→ ${q.correctIndex}. ${opt(q.correctIndex)})`,
-				)}`;
+				return `${theme.fg("error", "✗ ")}${q.label}: ${sel} ${theme.fg("muted", `(→ ${corr})`)}`;
 			});
 			const score = details.answers.filter((a) => a.correct).length;
 			lines.push(theme.fg("muted", `Score: ${score}/${details.answers.length}`));

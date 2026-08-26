@@ -18,8 +18,8 @@ import { Type } from "typebox";
 import { transformMathInMarkdown } from "../lib/math-unicode.ts";
 
 interface QuizDetails {
-	questions: { id: string; label: string; prompt: string; options: string[]; correctIndex: number }[];
-	answers: { id: string; selectedIndex: number; correct: boolean; idk: boolean; note?: string }[];
+	questions: { id: string; label: string; prompt: string; options: string[]; correctIndices: number[] }[];
+	answers: { id: string; selectedIndices: number[]; correct: boolean; idk: boolean; note?: string }[];
 	cancelled: boolean;
 }
 
@@ -38,14 +38,14 @@ function formatQuizMarkdown(details: QuizDetails): string {
 	for (const a of details.answers) {
 		const q = details.questions.find((qq) => qq.id === a.id);
 		if (!q) continue;
+		const correctTxt = q.correctIndices.map((c) => q.options[c - 1]).join(", ");
+		const selTxt = a.selectedIndices.map((s) => q.options[s - 1]).join(", ");
 		if (a.idk) {
-			lines.push(`- ❓ ${q.prompt} — *I don't know* (answer: ${q.options[q.correctIndex - 1]})`);
+			lines.push(`- ❓ ${q.prompt} — *I don't know* (answer: ${correctTxt})`);
 		} else if (a.correct) {
-			lines.push(`- ✅ ${q.prompt} — ${q.options[a.selectedIndex - 1]}`);
+			lines.push(`- ✅ ${q.prompt} — ${selTxt}`);
 		} else {
-			lines.push(
-				`- ❌ ${q.prompt} — answered *${q.options[a.selectedIndex - 1]}*, correct: **${q.options[q.correctIndex - 1]}**`,
-			);
+			lines.push(`- ❌ ${q.prompt} — answered *${selTxt}*, correct: **${correctTxt}**`);
 		}
 		if (a.note) lines.push(`  - note: ${a.note}`);
 	}
