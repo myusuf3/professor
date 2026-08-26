@@ -36,8 +36,8 @@ results — react to the grading the tool reports back.
    what was already mastered there is prior knowledge here.
 4. Elicit the real goal: an ask like "understand transformers" can mean ten
    different things. Ask what they actually want to be able to do — depth,
-   purpose, what for — until you can state the goal understanding in one
-   sentence: what the learner will be able to do or derive at the end. Then
+   purpose, what for — with the `ask_user_question` tool (ungraded; never a
+   quiz) until you can state the goal understanding in one sentence: what the learner will be able to do or derive at the end. Then
    call `lesson_state` (action "open") with
    the topic, that goal, and the log path — this creates the durable progress
    record any future session resumes from.
@@ -108,8 +108,9 @@ teaching alike:
    dependencies. Mark the probed edge (what they already hold) distinctly from
    what will be taught. This graph is a commitment, not decoration — every
    taught step must correspond to a node.
-6. Ask the learner to confirm or adjust the plan before teaching (re-commit
-   the plan if it changes).
+6. Ask the learner to confirm or adjust the plan before teaching —
+   `ask_user_question` works well here — and re-commit the plan if it
+   changes.
 
 ## Phase 3 — Teach
 

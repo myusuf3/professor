@@ -22,6 +22,7 @@ import {
 } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 import { convertDollarSegments } from "../lib/math-unicode.ts";
+import { withUiLock } from "../lib/ui-lock.ts";
 
 interface QuizQuestion {
 	id: string;
@@ -140,7 +141,8 @@ export default function quiz(pi: ExtensionAPI) {
 			const isMulti = questions.length > 1;
 			const totalTabs = questions.length + 1; // questions + Submit
 
-			const result = await ctx.ui.custom<QuizResult>((tui, theme, _kb, done) => {
+			const result = await withUiLock(() =>
+				ctx.ui.custom<QuizResult>((tui, theme, _kb, done) => {
 				let currentTab = 0;
 				let optionIndex = 0;
 				let noteMode = false;
@@ -464,7 +466,8 @@ export default function quiz(pi: ExtensionAPI) {
 					},
 					handleInput,
 				};
-			});
+				}),
+			);
 
 			if (result.cancelled) {
 				return {
