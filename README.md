@@ -64,7 +64,7 @@ where the last one stopped:
 | `extensions/lesson-state.ts` | `lesson_state` tool + `/lessons` and `/gap` commands — durable progress: plan DAG, per-node verification, and learner-flagged gaps in `lessons/<topic>/state.json`, auto-updated from quiz results (question id = node id). What `/resume` reads. |
 | `extensions/delegate.ts` | `delegate` tool — runs subagents as isolated child `pi` processes (parallel-capable). |
 | `agents/researcher.md` | Adversarial fact-checker for claims in the lesson plan. |
-| `agents/svg-artist.md` | Draws instructional SVGs, rasterizes them, and inspects the result before delivering. |
+| `agents/svg-artist.md` | Draws instructional SVGs with a dedicated authoring loop (`write_svg`/`edit_svg`/`render_svg` in `lib/visual-tools/`): every render comes back as an inline PNG the agent must look at, and publishing ships the SVG source. Returns `RESULT: NONE` rather than a wrong picture. |
 | `skills/teach/SKILL.md` | The pedagogy: the probe → plan → teach protocol itself. Edit this to install your own learning philosophy. |
 | `prompts/teach.md` | `/teach <topic>` entry point. |
 | `prompts/resume.md` | `/resume [topic]` — continue an in-progress lesson in a fresh session. |

@@ -25,6 +25,23 @@ import { Type } from "typebox";
 const MAX_PARALLEL = 4;
 const OUTPUT_CAP = 50 * 1024;
 
+// Extension-provided tools live in files the child pi process must load
+// explicitly with -e. An agent whose frontmatter `tools:` names one of these
+// gets the owning extension file injected (lib/, so the teacher's own session
+// never loads them).
+const SVG_TOOLS_PATH = path.join(
+	path.dirname(fileURLToPath(import.meta.url)),
+	"..",
+	"lib",
+	"visual-tools",
+	"svg-tools.ts",
+);
+const TOOL_EXTENSIONS: Record<string, string> = {
+	write_svg: SVG_TOOLS_PATH,
+	edit_svg: SVG_TOOLS_PATH,
+	render_svg: SVG_TOOLS_PATH,
+};
+
 interface AgentConfig {
 	name: string;
 	description: string;
@@ -90,7 +107,13 @@ async function runAgent(
 	const model = agent.model ?? defaults.model;
 	if (model) args.push("--model", model);
 	if (!agent.model && defaults.thinkingLevel) args.push("--thinking", defaults.thinkingLevel);
-	if (agent.tools?.length) args.push("--tools", agent.tools.join(","));
+	if (agent.tools?.length) {
+		args.push("--tools", agent.tools.join(","));
+		const extPaths = new Set(
+			agent.tools.map((t) => TOOL_EXTENSIONS[t]).filter((p): p is string => p !== undefined),
+		);
+		for (const extPath of extPaths) args.push("-e", extPath);
+	}
 
 	const tmpDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), "professor-"));
 	const promptPath = path.join(tmpDir, "prompt.md");
