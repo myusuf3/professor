@@ -67,16 +67,69 @@ export default function mdlog(pi: ExtensionAPI) {
 		}
 	}
 
-	function setLogPath(target: string, cwd: string, title?: string): string {
+	function setLogPath(target: string, cwd: string, title?: string): { path: string; created: boolean } {
 		const resolved = path.isAbsolute(target) ? target : path.join(cwd, target);
 		mkdirSync(path.dirname(resolved), { recursive: true });
-		if (!existsSync(resolved)) {
+		const created = !existsSync(resolved);
+		if (created) {
 			const heading = title ?? path.basename(resolved, ".md").replace(/[-_]/g, " ");
 			appendFileSync(resolved, `# ${heading}\n\n*${new Date().toISOString().slice(0, 10)}*\n\n`, "utf8");
 		}
 		logPath = resolved;
 		pi.appendEntry("mdlog-target", { path: resolved });
-		return resolved;
+		return { path: resolved, created };
+	}
+
+	/** Learner-facing form of a user message, or null if nothing loggable remains. */
+	function cleanUserText(raw: string): string | null {
+		// Injected payloads (loaded skills, system reminders) are not the learner's words
+		const text = raw
+			.replace(/<(skill|system-reminder|command-name|command-args)>[\s\S]*?<\/\1>/g, "")
+			.trim();
+		if (!text || text.startsWith("Task:")) return null;
+		return text.split("\n").map((l) => `> ${l}`).join("\n");
+	}
+
+	/**
+	 * Reconstruct the session so far into a freshly created log file, so a
+	 * log linked mid-lesson still captures the whole lesson.
+	 */
+	function backfill(ctx: { sessionManager: { getBranch(): unknown[] } }): number {
+		if (!logPath) return 0;
+		let count = 0;
+		for (const entry of ctx.sessionManager.getBranch() as {
+			type: string;
+			message?: {
+				role: string;
+				content: unknown;
+				toolName?: string;
+				isError?: boolean;
+				details?: unknown;
+			};
+		}[]) {
+			if (entry.type !== "message" || !entry.message) continue;
+			const msg = entry.message;
+			if (msg.role === "user") {
+				const text = cleanUserText(extractText(msg as { role: string; content: unknown }));
+				if (text) {
+					append(text);
+					count++;
+				}
+			} else if (msg.role === "assistant") {
+				const text = extractText(msg as { role: string; content: unknown }).trim();
+				if (text) {
+					append(text);
+					count++;
+				}
+			} else if (msg.role === "toolResult" && msg.toolName === "quiz" && !msg.isError) {
+				const details = msg.details as QuizDetails | undefined;
+				if (details && !details.cancelled && details.answers.length > 0) {
+					append(formatQuizMarkdown(details));
+					count++;
+				}
+			}
+		}
+		return count;
 	}
 
 	function reconstruct(ctx: { sessionManager: { getBranch(): unknown[] } }) {
@@ -105,10 +158,16 @@ export default function mdlog(pi: ExtensionAPI) {
 			title: Type.Optional(Type.String({ description: "Heading written when the file is created" })),
 		}),
 		async execute(_id, params, _signal, _onUpdate, ctx) {
-			const resolved = setLogPath(params.path, ctx.cwd, params.title);
+			const { path: resolved, created } = setLogPath(params.path, ctx.cwd, params.title);
+			const backfilled = created ? backfill(ctx) : 0;
 			ctx.ui.setStatus("mdlog", `✎ ${path.basename(path.dirname(resolved))}`);
 			return {
-				content: [{ type: "text" as const, text: `Lesson log: ${resolved}` }],
+				content: [
+					{
+						type: "text" as const,
+						text: `Lesson log: ${resolved}${backfilled ? ` (${backfilled} earlier entries backfilled)` : ""}`,
+					},
+				],
 				details: { path: resolved },
 			};
 		},
@@ -133,9 +192,10 @@ export default function mdlog(pi: ExtensionAPI) {
 				ctx.ui.notify("Lesson log unlinked", "info");
 				return;
 			}
-			const resolved = setLogPath(arg, ctx.cwd);
+			const { path: resolved, created } = setLogPath(arg, ctx.cwd);
+			const backfilled = created ? backfill(ctx) : 0;
 			ctx.ui.setStatus("mdlog", `✎ ${path.basename(path.dirname(resolved))}`);
-			ctx.ui.notify(`Logging to ${resolved}`, "info");
+			ctx.ui.notify(`Logging to ${resolved}${backfilled ? ` (${backfilled} entries backfilled)` : ""}`, "info");
 		},
 	});
 
@@ -153,13 +213,8 @@ export default function mdlog(pi: ExtensionAPI) {
 		if (!logPath) return;
 		const message = event.message as { role: string; content: unknown };
 		if (message.role === "user") {
-			// Injected payloads (loaded skills, system reminders) are not the learner's words
-			const text = extractText(message)
-				.replace(/<(skill|system-reminder|command-name|command-args)>[\s\S]*?<\/\1>/g, "")
-				.trim();
-			if (text && !text.startsWith("Task:")) {
-				append(text.split("\n").map((l) => `> ${l}`).join("\n"));
-			}
+			const text = cleanUserText(extractText(message));
+			if (text) append(text);
 		} else if (message.role === "assistant") {
 			const text = extractText(message).trim();
 			if (text) append(text);
