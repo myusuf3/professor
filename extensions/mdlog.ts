@@ -106,6 +106,7 @@ export default function mdlog(pi: ExtensionAPI) {
 		}),
 		async execute(_id, params, _signal, _onUpdate, ctx) {
 			const resolved = setLogPath(params.path, ctx.cwd, params.title);
+			ctx.ui.setStatus("mdlog", `✎ ${path.basename(path.dirname(resolved))}`);
 			return {
 				content: [{ type: "text" as const, text: `Lesson log: ${resolved}` }],
 				details: { path: resolved },
@@ -128,22 +129,34 @@ export default function mdlog(pi: ExtensionAPI) {
 			if (arg === "off") {
 				logPath = null;
 				pi.appendEntry("mdlog-target", { path: null });
+				ctx.ui.setStatus("mdlog", undefined);
 				ctx.ui.notify("Lesson log unlinked", "info");
 				return;
 			}
 			const resolved = setLogPath(arg, ctx.cwd);
+			ctx.ui.setStatus("mdlog", `✎ ${path.basename(path.dirname(resolved))}`);
 			ctx.ui.notify(`Logging to ${resolved}`, "info");
 		},
 	});
 
-	pi.on("session_start", (_event, ctx) => reconstruct(ctx));
-	pi.on("session_tree", (_event, ctx) => reconstruct(ctx));
+	const reconstructAndShow = (ctx: {
+		sessionManager: { getBranch(): unknown[] };
+		ui: { setStatus(key: string, text: string | undefined): void };
+	}) => {
+		reconstruct(ctx);
+		ctx.ui.setStatus("mdlog", logPath ? `✎ ${path.basename(path.dirname(logPath))}` : undefined);
+	};
+	pi.on("session_start", (_event, ctx) => reconstructAndShow(ctx));
+	pi.on("session_tree", (_event, ctx) => reconstructAndShow(ctx));
 
 	pi.on("message_end", (event) => {
 		if (!logPath) return;
 		const message = event.message as { role: string; content: unknown };
 		if (message.role === "user") {
-			const text = extractText(message).trim();
+			// Injected payloads (loaded skills, system reminders) are not the learner's words
+			const text = extractText(message)
+				.replace(/<(skill|system-reminder|command-name|command-args)>[\s\S]*?<\/\1>/g, "")
+				.trim();
 			if (text && !text.startsWith("Task:")) {
 				append(text.split("\n").map((l) => `> ${l}`).join("\n"));
 			}

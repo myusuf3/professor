@@ -61,8 +61,15 @@ const QuizParams = Type.Object({
 				description:
 					"The correct option's exact text, verbatim from `options`. Grading is done by the tool against this value.",
 			}),
-			explanation: Type.Optional(
-				Type.String({ description: "Shown to the learner after grading. Why the answer is right." }),
+			explanation: Type.String({
+				description:
+					"Shown to the learner after grading. Why the answer is right — address the tempting distractor, not just the fact.",
+			}),
+			shuffle: Type.Optional(
+				Type.Boolean({
+					description:
+						"Shuffle option order before display (default true). Set false only when order is meaningful ('All of the above', ordered sequences).",
+				}),
 			),
 		}),
 		{ description: "Questions to ask" },
@@ -81,6 +88,8 @@ export default function quiz(pi: ExtensionAPI) {
 			"Each question automatically gets an 'I don't know' option — treat IDK as a strong signal about the edge of understanding, never penalize it.",
 			"Learners can attach free-text reasoning notes to answers; use them to calibrate.",
 			"The tool grades every answer itself against correctAnswer and shows the learner their graded results before returning — never announce, predict, or re-grade results yourself.",
+			"Options are shuffled before display, so never refer to options by number or letter in prose.",
+			"Craft each distractor as a diagnostic for one specific misconception, keep all options the same length and register so the answer never stands out by format, and never add your own 'I don't know' option.",
 		].join(" "),
 		promptSnippet: "Graded multiple-choice quiz shown interactively to the learner",
 		parameters: QuizParams,
@@ -110,12 +119,21 @@ export default function quiz(pi: ExtensionAPI) {
 				if (matches.length > 1) {
 					throw new Error(`Question '${q.id}': correctAnswer matches ${matches.length} options — options must be distinct`);
 				}
+				// Shuffle display order (grading is by value, so this is free) —
+				// otherwise the correct answer sits wherever the model habitually puts it.
+				const order = q.options.map((_, j) => j);
+				if (q.shuffle !== false) {
+					for (let k = order.length - 1; k > 0; k--) {
+						const r = Math.floor(Math.random() * (k + 1));
+						[order[k], order[r]] = [order[r], order[k]];
+					}
+				}
 				return {
 					id: q.id,
 					label: q.label || `Q${i + 1}`,
 					prompt: q.prompt,
-					options: q.options,
-					correctIndex: matches[0] + 1,
+					options: order.map((j) => q.options[j]),
+					correctIndex: order.indexOf(matches[0]) + 1,
 					explanation: q.explanation,
 				};
 			});
@@ -127,6 +145,7 @@ export default function quiz(pi: ExtensionAPI) {
 				let optionIndex = 0;
 				let noteMode = false;
 				let cachedLines: string[] | undefined;
+				let cachedWidth = -1; // resize re-renders without invalidate — stale wider lines would crash
 				let graded: QuizResult | null = null;
 				const selections = new Map<string, number>(); // id → 1-based index or IDK
 				const notes = new Map<string, string>();
@@ -290,7 +309,8 @@ export default function quiz(pi: ExtensionAPI) {
 				}
 
 				function render(width: number): string[] {
-					if (cachedLines) return cachedLines;
+					if (cachedLines && cachedWidth === width) return cachedLines;
+					cachedWidth = width;
 					const lines: string[] = [];
 					const renderWidth = Math.max(1, width);
 					const q = currentQuestion();
