@@ -152,7 +152,7 @@ export default function mdlog(pi: ExtensionAPI) {
 		name: "lesson_log",
 		label: "Lesson log",
 		description:
-			"Link a markdown file as the lesson log. All subsequent conversation and quiz results are appended to it. Use a descriptive path like 'lessons/differential-forms-2026-08-23.md'.",
+			"Link a markdown file as the lesson log. All subsequent conversation and quiz results are appended to it. Use a per-lesson folder path like 'lessons/differential-forms/lesson.md' — the creation date is stamped into the file's header automatically.",
 		parameters: Type.Object({
 			path: Type.String({ description: "Markdown file path, relative to the working directory" }),
 			title: Type.Optional(Type.String({ description: "Heading written when the file is created" })),
